@@ -1,0 +1,21 @@
+name = "tg-contact-bot"
+main = "TG_Bot_D1.js"
+compatibility_date = "2024-09-23"
+
+# D1 数据库绑定（变量名必须为 TG_BOT_DB）
+[[d1_databases]]
+binding = "TG_BOT_DB"
+database_name = "tg-bot-db"
+database_id = "<YOUR_DATABASE_ID>"  # 替换为你的 D1 数据库 ID
+
+# 环境变量（在 Cloudflare Dashboard 或使用 wrangler secret 设置）
+[vars]
+BOT_TOKEN = "<YOUR_BOT_TOKEN>"
+ADMIN_IDS = "<YOUR_ADMIN_ID>"
+ADMIN_GROUP_ID = "<YOUR_GROUP_ID>"
+WORKER_URL = "<YOUR_WORKER_URL>"
+TURNSTILE_SITE_KEY = "<YOUR_SITE_KEY>"
+TURNSTILE_SECRET_KEY = "<YOUR_SECRET_KEY>"
+RECAPTCHA_SITE_KEY = ""
+RECAPTCHA_SECRET_KEY = ""
+TELEGRAM_WEBHOOK_SECRET = "<YOUR_WEBHOOK_SECRET>"
