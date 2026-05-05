@@ -25,35 +25,33 @@
 
 ## 🚀 部署
 
-### 第一步：Fork 本项目
+### 方式一：一键部署 【推荐】
 
-点击右上角 **Fork** 按钮，将项目复制到你的 GitHub 账号下。
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Rude56/TG_Bot_D1)
 
-### 第二步：创建 D1 数据库
+点击按钮 → 授权 Cloudflare → 自动创建 Worker 并部署，然后继续下面的配置步骤。
 
-进入 [Cloudflare Dashboard](https://dash.cloudflare.com/)：
+### 方式二：Fork + Connect to Git
 
-1. 左侧菜单 → **存储和数据库** → **D1**
-2. 点击 **创建数据库**，名称输入 `tg-bot-db`
-3. 记下数据库 ID（后面要用）
+1. 点击右上角 **Fork** 按钮
+2. Cloudflare Dashboard → Workers 和 Pages → **创建** → **连接到 Git** → 选择你的 Fork
+3. 保存并部署
 
-### 第三步：连接 Git 部署
+---
 
-1. 进入 Cloudflare Dashboard → **Workers 和 Pages**
-2. 点击 **创建** → 选择 **Workers** 标签页 → **连接到 Git**
-3. 授权 GitHub → 选择你 Fork 的仓库
-4. 项目名称随意，点击 **保存并部署**
+### 配置步骤（两种方式通用）
 
-### 第四步：绑定 D1 数据库
+#### 1. 创建 D1 数据库
 
-1. 进入刚创建的 Worker → **设置** → **绑定**
-2. 点击 **添加** → 选择 **D1 数据库**
-3. 填写：
-   - 变量名称：`TG_BOT_DB`
-   - 数据库：选择 `tg-bot-db`
-4. 保存
+进入 [Cloudflare Dashboard](https://dash.cloudflare.com/) → **存储和数据库** → **D1** → 创建数据库，名称 `tg-bot-db`。
 
-### 第五步：添加环境变量
+#### 2. 绑定 D1
+
+进入 Worker → **设置** → **绑定** → **添加** → **D1 数据库**：
+- 变量名称：`TG_BOT_DB`
+- 数据库：选择 `tg-bot-db`
+
+#### 3. 添加环境变量
 
 进入 Worker → **设置** → **变量和机密** → **添加变量**：
 
@@ -63,21 +61,19 @@
 | `ADMIN_IDS` | `123456789` | 你的 Telegram ID（从 @raw_data_bot 获取） |
 | `ADMIN_GROUP_ID` | `-100123456789` | 管理群组 ID（必须开启话题的超级群组） |
 
-> 点击「保存」后会自动重新部署。
+#### 4. 设置 Webhook
 
-### 第六步：设置 Webhook
-
-部署完成后，在浏览器地址栏访问（替换 `<TOKEN>` 和 `<WORKER_URL>`）：
+在浏览器访问（替换 `<TOKEN>` 和 `<WORKER_URL>`）：
 
 ```
 https://api.telegram.org/bot<TOKEN>/setWebhook?url=<WORKER_URL>&allowed_updates=["message","edited_message","callback_query","message_reaction"]
 ```
 
-> `<WORKER_URL>` 在 Worker 概览页可以看到，类似 `https://xxx.your-subdomain.workers.dev`
+> `<WORKER_URL>` 在 Worker 概览页可以看到，类似 `https://xxx.workers.dev`
 
 返回 `{"ok":true,"result":true}` 即成功。
 
-### 第七步：开始使用
+#### 5. 开始使用
 
 1. 向 Bot 发送 `/start` 完成验证
 2. 在管理群组中向 Bot 发送 `/start` 打开控制面板
@@ -110,7 +106,7 @@ https://api.telegram.org/bot<TOKEN>/setWebhook?url=<WORKER_URL>&allowed_updates=
 |------|------|--------|
 | 协管管理 | 手动添加协管 ID | **自动识别群管理员** |
 | 转发消息 | `copyMessage`（无来源） | **`forwardMessage`**（保留来源） |
-| 部署方式 | 手动复制粘贴 | **Fork + Connect to Git** |
+| 部署方式 | 手动复制粘贴 | **一键按钮 / Fork** |
 | 环境变量 | 9 个 | **3 个** |
 
 ## ❓ 常见问题
