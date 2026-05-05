@@ -1,9 +1,11 @@
 /**
-* Telegram Bot Worker v4.0
+* Telegram Bot Worker v4.1
 * 基于 TG_Chat_Bot-D1 v3.85 改造
 * - 协管系统改为自动识别群管理员
 * - 转发消息保留来源（forwardMessage）
 * - 简化部署流程
+* - 移除备注/手动屏蔽，改为黑名单制
+* - 所有群成员可回复用户
 */
 
 // --- 1. 静态配置与常量 ---  
@@ -36,8 +38,7 @@ const DEFAULTS = {
   verif_q: "1+1=?\n提示:答案在简介中。",
   verif_a: "2",
 
-  // 风控  
-  block_threshold: "5",
+  // 风控
   enable_admin_receipt: "true",
 
   // 转发开关  
@@ -96,7 +97,7 @@ const REGEX_REJECT_PATTERNS = [
 
 const MSG_TYPES = [
   {
-    check: m => m.forward_from || m.forward_from_chat,
+    check: m => m.forward_from || m.forward_from_chat || m.forward_origin,
     key: "enable_forward_forwarding",
     name: "转发消息",
     extra: m => (m.forward_from_chat?.type === "channel" ? "enable_channel_forwarding" : null)
@@ -119,7 +120,7 @@ export default {
     try {
       if (req.method === "GET") {
         if (url.pathname === "/verify") return handleVerifyPage(url, env);
-        if (url.pathname === "/") return new Response("Bot v4.0 (Admin Auto-Detect)", { status: 200 });
+        if (url.pathname === "/") return new Response("Bot v4.1", { status: 200 });
       }
 
       if (req.method === "POST") {
@@ -476,12 +477,13 @@ async function handlePrivate(msg, env, ctx) {
   const isStart = text.startsWith("/start");
 
   const u0 = await getUser(id, env);
-  if (u0.is_blocked && !(await isAuthAdmin(id, env))) {
+  // 黑名单检查
+  if (u0.is_blocked) {
     const bk = `blocked_notice:${id}`;
     if (!CACHE.locks.has(bk)) {
       CACHE.locks.add(bk);
-      setTimeout(() => CACHE.locks.delete(bk), 10000);
-      api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "🚫 您已被管理员屏蔽,无法发送消息。" }).catch(() => { });
+      setTimeout(() => CACHE.locks.delete(bk), 60000);
+      api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "🚫 您已被拉黑，无法发送消息。" }).catch(() => { });
     }
     return;
   }
@@ -553,7 +555,7 @@ async function forceResetUserVerify(userId, env) {
 // --- 9. Start 流程 ---  
 async function sendStart(id, msg, env) {
   const u = await getUser(id, env);
-  if (u.is_blocked && !(await isAuthAdmin(id, env))) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "🚫 您已被管理员屏蔽。" }).catch(() => { });
+  if (u.is_blocked) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "🚫 您已被拉黑，无法使用。" }).catch(() => { });
 
   if (u.user_state === "verified") {
     return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: u.topic_id ? "✅ <b>会话已连接</b>" : "✅ 已验证。", parse_mode: "HTML" });
@@ -603,21 +605,15 @@ async function sendStart(id, msg, env) {
 // --- 10. 已验证用户逻辑 (新增自动化就寝判定) ---  
 async function handleVerifiedMsg(msg, u, env, ctx) {
   const id = u.user_id;
-  if (u.is_blocked && !(await isAuthAdmin(id, env))) return;
+  if (u.is_blocked) return;
   const text = msg.text || msg.caption || "";
 
+  // 违禁词检测（仅警告，不自动封禁）
   if (text) {
     const kws = await getJsonCfg("block_keywords", env);
     const hit = (Array.isArray(kws) ? kws : []).some(k => safeRegexTest(k, text));
     if (hit) {
-      const c = u.block_count + 1;
-      const max = parseInt(await getCfg("block_threshold", env), 10) || 5;
-      await updUser(id, { block_count: c, is_blocked: c >= max }, env);
-      if (c >= max) {
-        await manageBlacklist(env, u, msg.from, true);
-        return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "❌ 您已被系统自动封禁" });
-      }
-      return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `⚠️ 含有违禁词 (${c}/${max})` });
+      return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "⚠️ 消息含有违禁词，已拦截。" });
     }
   }
 
@@ -634,7 +630,8 @@ async function handleVerifiedMsg(msg, u, env, ctx) {
     const match = (Array.isArray(rules) ? rules : []).find(r => r && safeRegexTest(r.keywords, text));
     if (match) api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: match.response }).catch(() => { });
   }
-  let deliveryEmoji = DELIVERED_REACTION; // 默认为 👍
+  // 只有文字消息给 👍 表态
+  let deliveryEmoji = (msg.text || msg.caption) ? DELIVERED_REACTION : null;
   // 就寝时间逻辑 (自动化)
   if (await getBool("enable_sleep_mode", env)) {
     const now = new Date();
@@ -662,7 +659,7 @@ async function handleVerifiedMsg(msg, u, env, ctx) {
 // --- 11. 转发到话题 (已修正引用功能) ---
 async function relayToTopic(msg, u, env, ctx, emoji) {
   const uid = u.user_id;
-  if (u.is_blocked && !(await isAuthAdmin(uid, env))) return;
+  if (u.is_blocked) return;
   const uMeta = getUMeta(msg.from, u, msg.date);
   let tid = u.topic_id;
 
@@ -738,7 +735,7 @@ async function relayToTopic(msg, u, env, ctx, emoji) {
   try {
       let res;
       // 转发消息使用 forwardMessage（保留来源信息）
-      if (msg.forward_from || msg.forward_from_chat) {
+      if (msg.forward_from || msg.forward_from_chat || msg.forward_origin) {
           res = await api(env.BOT_TOKEN, "forwardMessage", {
               chat_id: env.ADMIN_GROUP_ID,
               from_chat_id: uid,
@@ -797,7 +794,7 @@ async function relayToTopic(msg, u, env, ctx, emoji) {
 // --- 12. 资料卡 ---  
 async function sendInfoCardToTopic(env, u, tgUser, tid, date) {
   const meta = getUMeta(tgUser, u, date || Date.now() / 1000);
-  const mk = getBtns(u.user_id, u.is_blocked);  
+  const mk = getBtns(u.user_id);  
 
   try {
     // 1. 获取用户头像列表
@@ -985,7 +982,7 @@ async function handleTokenSubmit(req, env, ctx) {
     if (uiUserId && uiUserId !== uid) throw new Error("uid mismatch");
 
     const u = await getUser(uid, env);
-    if (u.is_blocked && !(await isAuthAdmin(uid, env))) throw new Error("blocked");
+    if (u.is_blocked) throw new Error("blocked");
 
     const savedNonce = (u.user_info?.verify_nonce || "").toString();
     const savedTs = Number(u.user_info?.verify_nonce_ts || 0);
@@ -1118,29 +1115,20 @@ const getUMeta = (tgUser, dbUser, d) => {
   // 新增：获取 Username
   const username = tgUser.username ? `@${tgUser.username}` : (dbUser.user_info?.username ? `@${dbUser.user_info.username}` : "无");
   
-  // 备注处理
-  const note = dbUser.user_info?.note ? `\n📝 <b>备注:</b> ${escapeHTML(dbUser.user_info.note)}` : "";
-  
-  // 修改：话题名称逻辑 (默认为姓名，有备注则显示备注)
-  const topicNameRaw = dbUser.user_info?.note ? dbUser.user_info.note : name;
-  
   return { 
       userId: id, 
       name, 
-      // 截取 128 字符限制
-      topicName: topicNameRaw.substring(0, 128), 
-      // 修改：资料卡添加 🔗 账号 (Username)
-      card: `👤: <code>${escapeHTML(name)}</code>\n🔗: ${escapeHTML(username)}\n🆔: <code>${escapeHTML(id)}</code>${note}\n🕒: <code>${escapeHTML(timeStr)}</code>` 
+      topicName: name.substring(0, 128), 
+      card: `👤: <code>${escapeHTML(name)}</code>\n🔗: ${escapeHTML(username)}\n🆔: <code>${escapeHTML(id)}</code>\n🕒: <code>${escapeHTML(timeStr)}</code>` 
   };
 };
-const getBtns = (id, blk) => ({
+const getBtns = (id) => ({
   inline_keyboard: [
     [{ text: "👤 主页", url: `tg://user?id=${id}` }],
     [
-      { text: "✏️ 备注", callback_data: `note:set:${id}` }, 
-      { text: blk ? "✅ 解封" : "🚫 屏蔽", callback_data: `${blk ? "unblock" : "block"}:${id}` }
-    ],
-    [{ text: "🗑 删除话题", callback_data: `del_topic_confirm:${id}` }]
+      { text: "🗑 删除话题", callback_data: `del_topic_confirm:${id}` },
+      { text: "🚫 删除并拉黑", callback_data: `del_topic_blacklist:${id}` }
+    ]
   ]
 });
 
@@ -1175,48 +1163,75 @@ async function handleCallback(cb, env) {
   const { data, message: msg, from } = cb;
   const [act, p1, p2] = (data || "").split(":");
 
-  // 1. 处理删除话题 - 二次确认
+  // 1. 删除话题 - 二次确认
   if (act === "del_topic_confirm") {
-      if (!(await isAuthAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
-      
+      if (!(await isPrimaryAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
       return api(env.BOT_TOKEN, "editMessageReplyMarkup", {
           chat_id: msg.chat.id,
           message_id: msg.message_id,
           reply_markup: {
               inline_keyboard: [
-                  [{ text: "⚠️ 确认删除此话题? (不可恢复)", callback_data: `del_topic_exec:${p1}` }],
+                  [{ text: "✅ 确认删除（用户可重新验证）", callback_data: `del_topic_exec:${p1}` }],
                   [{ text: "🔙 取消", callback_data: `cancel_del:${p1}` }]
               ]
           }
       }).catch(() => {});
   }
 
-  // 2. 处理删除话题 - 执行删除
-if (act === "del_topic_exec") {
-  if (!(await isAuthAdmin(from.id, env))) return;
-  const uid = p1;
-  const u = await getUser(uid, env);
-  try {
-      if (u.topic_id) {
-          await api(env.BOT_TOKEN, "deleteForumTopic", { chat_id: env.ADMIN_GROUP_ID, message_thread_id: u.topic_id });
-      }
-  } catch (e) {
-      console.error("Del Topic Error:", e);
+  // 2. 删除话题 - 执行删除（用户可重新验证）
+  if (act === "del_topic_exec") {
+      if (!(await isPrimaryAdmin(from.id, env))) return;
+      const uid = p1;
+      const u = await getUser(uid, env);
+      try {
+          if (u.topic_id) {
+              await api(env.BOT_TOKEN, "deleteForumTopic", { chat_id: env.ADMIN_GROUP_ID, message_thread_id: u.topic_id });
+          }
+      } catch (e) { console.error("Del Topic Error:", e); }
+      await sql(env, "UPDATE users SET topic_id=NULL, user_state='new', user_info_json='{}', is_blocked=0, topic_creating=0 WHERE user_id=?", [uid]);
+      api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "✅ 已删除，用户可重新验证" }).catch(() => {});
+      return api(env.BOT_TOKEN, "editMessageText", {
+          chat_id: msg.chat.id, message_id: msg.message_id,
+          text: msg.text + "\n\n🗑 <b>话题已删除，用户可重新验证</b>",
+          parse_mode: "HTML", reply_markup: { inline_keyboard: [] }
+      }).catch(() => {});
   }
 
-  // 修改：彻底清空用户数据 (user_info_json 重置为 "{}")，而非仅重置验证状态
-  // 这将删除：备注、保存的Username、Name、入群时间、验证Nonce等
-  await sql(env, "UPDATE users SET topic_id=NULL, user_state='new', user_info_json='{}', is_blocked=0, block_count=0, topic_creating=0 WHERE user_id=?", [uid]);
+  // 3. 删除话题并拉黑
+  if (act === "del_topic_blacklist") {
+      if (!(await isPrimaryAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
+      return api(env.BOT_TOKEN, "editMessageReplyMarkup", {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id,
+          reply_markup: {
+              inline_keyboard: [
+                  [{ text: "⚠️ 确认删除并拉黑？用户将无法再次私信", callback_data: `del_blacklist_exec:${p1}` }],
+                  [{ text: "🔙 取消", callback_data: `cancel_del:${p1}` }]
+              ]
+          }
+      }).catch(() => {});
+  }
 
-  api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "✅ 话题及用户数据已彻底清除" }).catch(() => {});
-  return api(env.BOT_TOKEN, "editMessageText", {
-      chat_id: msg.chat.id,
-      message_id: msg.message_id,
-      text: msg.text + "\n\n🗑 <b>话题已删除，用户数据(含备注)已清空</b>",
-      parse_mode: "HTML",
-      reply_markup: { inline_keyboard: [] }
-  }).catch(() => {});
-}
+  // 4. 执行删除并拉黑
+  if (act === "del_blacklist_exec") {
+      if (!(await isPrimaryAdmin(from.id, env))) return;
+      const uid = p1;
+      const u = await getUser(uid, env);
+      try {
+          if (u.topic_id) {
+              await api(env.BOT_TOKEN, "deleteForumTopic", { chat_id: env.ADMIN_GROUP_ID, message_thread_id: u.topic_id });
+          }
+      } catch (e) { console.error("Del Topic Error:", e); }
+      await sql(env, "UPDATE users SET topic_id=NULL, user_state='new', user_info_json='{}', is_blocked=1, topic_creating=0 WHERE user_id=?", [uid]);
+      // 发送黑名单通知到黑名单话题
+      await manageBlacklist(env, u, { id: uid, first_name: u.user_info?.name || "User", username: u.user_info?.username }, true);
+      api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "✅ 已删除并拉黑" }).catch(() => {});
+      return api(env.BOT_TOKEN, "editMessageText", {
+          chat_id: msg.chat.id, message_id: msg.message_id,
+          text: msg.text + "\n\n🚫 <b>话题已删除，用户已拉黑</b>",
+          parse_mode: "HTML", reply_markup: { inline_keyboard: [] }
+      }).catch(() => {});
+  }
 
   // 3. 处理取消删除 - 恢复原状
   if (act === "cancel_del") {
@@ -1225,7 +1240,7 @@ if (act === "del_topic_exec") {
       return api(env.BOT_TOKEN, "editMessageReplyMarkup", {
           chat_id: msg.chat.id,
           message_id: msg.message_id,
-          reply_markup: getBtns(uid, u.is_blocked)
+          reply_markup: getBtns(uid)
       }).catch(() => {});
   }
 
@@ -1236,11 +1251,6 @@ if (act === "del_topic_exec") {
       return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "已处理" }).catch(() => { });
   }
 
-  if (act === "note" && p1 === "set") {
-      await setCfg(`admin_state:${from.id}`, JSON.stringify({ action: "input_note", target: p2 }), env);
-      return api(env.BOT_TOKEN, "sendMessage", { chat_id: msg.chat.id, message_thread_id: msg.message_thread_id, text: "⌨️ 请回复备注内容 (回复 /clear 清除):" });
-  }
-
   if (act === "config") {
       if (!(await isPrimaryAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权", show_alert: true }).catch(() => { });
       await api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => { });
@@ -1248,55 +1258,21 @@ if (act === "del_topic_exec") {
       return handleAdminConfig(msg.chat.id, msg.message_id, t, k, v, env);
   }
 
-  if (msg.chat.id.toString() === env.ADMIN_GROUP_ID && ["block", "unblock"].includes(act)) {
-      if (!(await isAuthAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权", show_alert: true }).catch(() => { });
-      const isB = act === "block";
-      const uid = p1;
-      const u = await getUser(uid, env);
-      await updUser(uid, { is_blocked: isB, block_count: 0 }, env);
-      if (u.user_info.card_msg_id) {
-          api(env.BOT_TOKEN, "editMessageReplyMarkup", { chat_id: env.ADMIN_GROUP_ID, message_id: u.user_info.card_msg_id, reply_markup: getBtns(uid, isB) }).catch(() => { });
-      }
-      await manageBlacklist(env, u, { id: uid, first_name: u.user_info.name || "User", username: u.user_info.username }, isB);
-      api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: isB ? "已屏蔽" : "已解封" }).catch(() => { });
-  }
 }
 
 // --- 19. 管理员回复 ---
 async function handleAdminReply(msg, env) {
-  // 基础检查：必须是群组话题中的消息、非机器人、必须是授权管理员
-  if (!msg.message_thread_id || msg.from.is_bot || !(await isAuthAdmin(msg.from.id, env))) return;
+  // 基础检查：必须是群组话题中的消息、非机器人
+  // 所有群成员都可以回复用户
+  if (!msg.message_thread_id || msg.from.is_bot) return;
 
-  // 处理备注输入状态
-  const stateStr = await getCfg(`admin_state:${msg.from.id}`, env);
-  if (stateStr) {
+  // 处理配置输入状态（仅主管理员）
+  if (await isPrimaryAdmin(msg.from.id, env)) {
+    const stateStr = await getCfg(`admin_state:${msg.from.id}`, env);
+    if (stateStr) {
       const state = safeParse(stateStr);
-      if (state.action === "input_note") {
-          const u = await getUser(state.target, env);
-          u.user_info.note = msg.text === "/clear" || msg.text === "清除" ? "" : msg.text;
-          await updUser(state.target, { user_info: u.user_info }, env);
-          await setCfg(`admin_state:${msg.from.id}`, "", env);
-          if (u.topic_id) {
-            try {
-                // 重新计算名称：有备注则用备注，否则用姓名
-                const newName = u.user_info.note ? u.user_info.note : u.user_info.name;
-                await api(env.BOT_TOKEN, "editForumTopic", {
-                    chat_id: env.ADMIN_GROUP_ID,
-                    message_thread_id: u.topic_id,
-                    name: newName.substring(0, 128)
-                });
-            } catch (e) {
-                console.error("Rename Topic Failed:", e);
-            }
-        }
-          if (u.topic_id && u.user_info.card_msg_id) {
-              const meta = getUMeta({ id: state.target, first_name: u.user_info.name, username: u.user_info.username }, u, u.user_info.join_date || Date.now() / 1000);
-              api(env.BOT_TOKEN, "editMessageText", {
-                  chat_id: env.ADMIN_GROUP_ID, message_id: u.user_info.card_msg_id, text: meta.card, parse_mode: "HTML", reply_markup: getBtns(state.target, u.is_blocked)
-              }).catch(() => { });
-          }
-          return api(env.BOT_TOKEN, "sendMessage", { chat_id: msg.chat.id, message_thread_id: msg.message_thread_id, text: "✅ 备注已更新" });
-      }
+      if (state.action === "input") return handleAdminInput(msg.from.id, msg, state, env);
+    }
   }
 
   // 查找当前话题对应的用户ID
@@ -1562,6 +1538,7 @@ async function handleReactionSync(reactionUpdate, env) {
   }
 }
 async function markDelivered(env, chatId, messageId, emoji = DELIVERED_REACTION) {
+  if (!emoji) return; // 无表情则跳过
   try {
     await api(env.BOT_TOKEN, "setMessageReaction", {
       chat_id: chatId,
