@@ -1511,6 +1511,7 @@ try {
     }
     val = JSON.stringify(arr);
     k = realK;
+  }
 
   await setCfg(k, val, env);
   await sql(env, "DELETE FROM config WHERE key=?", [`admin_state:${id}`]);
