@@ -1220,14 +1220,17 @@ async function handleCallback(cb, env) {
       if (!(await isPrimaryAdmin(from.id, env))) return;
       const uid = p1;
       const u = await getUser(uid, env);
+      // 先保存用户信息，避免清空后丢失
+      const savedName = u.user_info?.name || "";
+      const savedUsername = u.user_info?.username || "";
       try {
           if (u.topic_id) {
               await api(env.BOT_TOKEN, "deleteForumTopic", { chat_id: env.ADMIN_GROUP_ID, message_thread_id: u.topic_id });
           }
       } catch (e) { console.error("Del Topic Error:", e); }
       await sql(env, "UPDATE users SET topic_id=NULL, user_state='new', user_info_json='{}', is_blocked=1, topic_creating=0 WHERE user_id=?", [uid]);
-      // 发送黑名单通知到黑名单话题
-      await manageBlacklist(env, u, { id: uid, first_name: u.user_info?.name || "User", username: u.user_info?.username }, true);
+      // 发送黑名单通知到黑名单话题（使用保存的用户信息）
+      await manageBlacklist(env, u, { id: uid, first_name: savedName || "User", last_name: "", username: savedUsername || undefined }, true);
       api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "✅ 已删除并拉黑" }).catch(() => {});
       return api(env.BOT_TOKEN, "editMessageText", {
           chat_id: msg.chat.id, message_id: msg.message_id,
@@ -1240,11 +1243,27 @@ async function handleCallback(cb, env) {
   if (act === "cancel_del") {
       const uid = p1;
       await api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "已取消" }).catch(() => {});
-      return api(env.BOT_TOKEN, "editMessageReplyMarkup", {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          reply_markup: getBtns(uid)
-      }).catch(e => { console.error("cancel_del editReplyMarkup error:", e); });
+      try {
+          await api(env.BOT_TOKEN, "editMessageReplyMarkup", {
+              chat_id: msg.chat.id,
+              message_id: msg.message_id,
+              reply_markup: getBtns(uid)
+          });
+      } catch (e) {
+          console.error("cancel_del editReplyMarkup error:", e);
+          // fallback: 删旧消息，发新消息
+          try {
+              await api(env.BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => {});
+              const u = await getUser(uid, env);
+              const meta = getUMeta({ id: uid, first_name: u.user_info?.name || "User", last_name: "", username: u.user_info?.username }, u, Date.now() / 1000);
+              await api(env.BOT_TOKEN, "sendMessage", {
+                  chat_id: msg.chat.id,
+                  text: meta.card, parse_mode: "HTML",
+                  reply_markup: getBtns(uid)
+              });
+          } catch (e2) { console.error("cancel_del fallback error:", e2); }
+      }
+      return;
   }
 
   // 5. 黑名单解除
