@@ -60,6 +60,14 @@
 | `BOT_TOKEN` | `12345:AAH...` | 从 @BotFather 获取（建议勾选「加密」） |
 | `ADMIN_IDS` | `123456789` | 你的 Telegram ID（从 @raw_data_bot 获取） |
 | `ADMIN_GROUP_ID` | `-100123456789` | 管理群组 ID（必须开启话题的超级群组） |
+| `TURNSTILE_SITE_KEY` | `0x4AAAA...` | Cloudflare Turnstile 站点密钥（可选） |
+| `TURNSTILE_SECRET_KEY` | `0x4AAAA...` | Cloudflare Turnstile 密钥（可选） |
+| `RECAPTCHA_SITE_KEY` | `6LAAA...` | Google reCAPTCHA v2 站点密钥（可选） |
+| `RECAPTCHA_SECRET_KEY` | `6LAAA...` | Google reCAPTCHA v2 密钥（可选） |
+
+> Turnstile / reCAPTCHA 用于人机验证，不填则使用 Q&A 提问验证。
+> 获取 Turnstile：[Cloudflare Dashboard → Turnstile → 添加站点](https://dash.cloudflare.com/)
+> 获取 reCAPTCHA：[Google reCAPTCHA Admin](https://www.google.com/recaptcha/admin)（选择 v2 Checkbox）
 
 #### 4. 设置 Webhook
 
