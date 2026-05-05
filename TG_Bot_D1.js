@@ -554,7 +554,7 @@ async function handlePrivate(msg, env, ctx) {
   }
 
   if (text === "/help" && (await isAuthAdmin(id, env))) {
-    return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "ℹ️ <b>帮助</b>\n• 回复消息即对话\n• /start 打开面板\n• /del 双向撤回\n• /del 用户id 删除话题\n• /write 用户id 解除拉黑\n• /black 用户id 拉黑用户\n• /reset 用户id 重置验证", parse_mode: "HTML" });
+    return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "ℹ️ <b>帮助</b>\n• 回复消息即对话\n• /start 打开面板\n• /del 双向撤回\n• /del 用户id 删除话题\n• /write 用户id 解除拉黑\n• /black 用户id 拉黑用户\n• /reset 用户id 重置验证\n• /refresh 刷新资料卡（话题内）", parse_mode: "HTML" });
   }
 
   const u = u0;
@@ -1354,6 +1354,22 @@ async function handleAdminReply(msg, env) {
   // 查找当前话题对应的用户ID
   const uid = (await sql(env, "SELECT user_id FROM users WHERE topic_id = ?", msg.message_thread_id.toString(), "first"))?.user_id;
   if (!uid) return;
+
+  // 刷新资料卡命令
+  if (msg.text === "/refresh" && (await isAuthAdmin(msg.from.id, env))) {
+    const u = await getUser(uid, env);
+    try {
+      // 删除旧资料卡
+      if (u.user_info?.card_msg_id) {
+        await api(env.BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: u.user_info.card_msg_id }).catch(() => {});
+      }
+      // 重新发送资料卡
+      await sendInfoCardToTopic(env, u, { id: uid, first_name: u.user_info?.name || "User", last_name: "", username: u.user_info?.username }, msg.message_thread_id, Date.now() / 1000);
+      // 删除命令消息
+      await api(env.BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => {});
+    } catch (e) { console.error("refresh card error:", e); }
+    return;
+  }
 
   // 处理回复关系
   let replyToIdInUser = undefined;
