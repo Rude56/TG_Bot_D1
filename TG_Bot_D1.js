@@ -114,6 +114,7 @@ export default {
     ctx.waitUntil(dbInit(env).catch(e => console.error("DB Init Failed:", e)));
 
     const url = new URL(req.url);
+    CACHE.workerUrl = url.origin; // 自动获取 Worker URL
 
     try {
       if (req.method === "GET") {
@@ -310,7 +311,7 @@ async function api(token, method, body) {
 // --- 5. Webhook 校验 / 幂等 / 限流 / 清理 ---  
 function isTelegramWebhook(req, env) {
   const secret = (env.TELEGRAM_WEBHOOK_SECRET || "").toString();
-  if (!secret) return false;
+  if (!secret) return true; // 未配置则跳过验证
   const hdr = req.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
   return timingSafeEqualStr(hdr, secret);
 }
@@ -579,7 +580,7 @@ async function sendStart(id, msg, env) {
     await api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: txt, parse_mode: "HTML" });
   }
 
-  const url = (env.WORKER_URL || "").replace(/\/$/, "");
+  const url = (CACHE.workerUrl || env.WORKER_URL || "").replace(/\/$/, "");
   const vOn = await getBool("enable_verify", env);
   const qaOn = await getBool("enable_qa_verify", env);
 
