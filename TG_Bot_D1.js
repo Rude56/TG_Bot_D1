@@ -1167,6 +1167,7 @@ async function handleCallback(cb, env) {
   // 1. 删除话题 - 二次确认
   if (act === "del_topic_confirm") {
       if (!(await isPrimaryAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
+      await api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
       return api(env.BOT_TOKEN, "editMessageReplyMarkup", {
           chat_id: msg.chat.id,
           message_id: msg.message_id,
@@ -1201,6 +1202,7 @@ async function handleCallback(cb, env) {
   // 3. 删除话题并拉黑
   if (act === "del_topic_blacklist") {
       if (!(await isPrimaryAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
+      await api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
       return api(env.BOT_TOKEN, "editMessageReplyMarkup", {
           chat_id: msg.chat.id,
           message_id: msg.message_id,
@@ -1237,12 +1239,12 @@ async function handleCallback(cb, env) {
   // 3. 处理取消删除 - 恢复原状
   if (act === "cancel_del") {
       const uid = p1;
-      api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "已取消" }).catch(() => {});
+      await api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "已取消" }).catch(() => {});
       return api(env.BOT_TOKEN, "editMessageReplyMarkup", {
           chat_id: msg.chat.id,
           message_id: msg.message_id,
           reply_markup: getBtns(uid)
-      }).catch(() => {});
+      }).catch(e => { console.error("cancel_del editReplyMarkup error:", e); });
   }
 
   // 5. 黑名单解除
