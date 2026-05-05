@@ -1,0 +1,24 @@
+name: Update Deploy URL
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  update-deploy-url:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update deploy button URL to current repo
+        run: |
+          REPO_URL="https://github.com/${{ github.repository }}"
+          DEPLOY_URL="https://deploy.workers.cloudflare.com/?url=${REPO_URL}"
+          # 替换 README 中的部署链接
+          sed -i "s|https://deploy.workers.cloudflare.com/?url=[^)]*|${DEPLOY_URL}|g" README.md
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet || (git add README.md && git commit -m "chore: update deploy URL to current repo" && git push)
