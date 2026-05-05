@@ -736,12 +736,12 @@ async function relayToTopic(msg, u, env, ctx, emoji) {
       let res;
       // 转发消息使用 forwardMessage（保留来源信息）
       if (msg.forward_from || msg.forward_from_chat || msg.forward_origin) {
+          // forwardMessage 不支持 reply_parameters
           res = await api(env.BOT_TOKEN, "forwardMessage", {
               chat_id: env.ADMIN_GROUP_ID,
               from_chat_id: uid,
               message_id: msg.message_id,
-              message_thread_id: tid,
-              reply_parameters: reply_parameters
+              message_thread_id: tid
           });
       } else {
           // 普通消息使用 copyMessage（无引用转发）
@@ -1109,7 +1109,8 @@ function genNonce(len) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const getUMeta = (tgUser, dbUser, d) => {
   const id = tgUser.id.toString();
-  const name = (((tgUser.first_name || "") + " " + (tgUser.last_name || "")).trim() || tgUser.first_name || "User");
+  const tgName = (((tgUser.first_name || "") + " " + (tgUser.last_name || "")).trim());
+  const name = tgName || dbUser.user_info?.name || "User";
   const timeStr = new Date(d * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
   
   // 新增：获取 Username
@@ -1236,7 +1237,7 @@ async function handleCallback(cb, env) {
   // 3. 处理取消删除 - 恢复原状
   if (act === "cancel_del") {
       const uid = p1;
-      const u = await getUser(uid, env);
+      api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "已取消" }).catch(() => {});
       return api(env.BOT_TOKEN, "editMessageReplyMarkup", {
           chat_id: msg.chat.id,
           message_id: msg.message_id,
@@ -1244,6 +1245,18 @@ async function handleCallback(cb, env) {
       }).catch(() => {});
   }
 
+  // 5. 黑名单解除
+  if (act === "unblock") {
+      if (!(await isPrimaryAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
+      const uid = p1;
+      await sql(env, "UPDATE users SET is_blocked=0 WHERE user_id=?", [uid]);
+      // 删除黑名单话题中的消息
+      await api(env.BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => {});
+      api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "✅ 已解除拉黑" }).catch(() => {});
+      // 通知用户
+      api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: "✅ 您的拉黑已被解除，发送 /start 重新开始。" }).catch(() => {});
+      return;
+  }
 
   if (act === "inbox" && p1 === "del") {
       await api(env.BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => { });
