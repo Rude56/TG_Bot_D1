@@ -12,3 +12,19 @@ database_id = "<YOUR_DATABASE_ID>"
 [vars]
 ADMIN_IDS = "<YOUR_ADMIN_ID>"
 ADMIN_GROUP_ID = "<YOUR_GROUP_ID>"
+
+# Observability
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
