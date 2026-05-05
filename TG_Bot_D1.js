@@ -1251,16 +1251,22 @@ async function handleCallback(cb, env) {
           });
       } catch (e) {
           console.error("cancel_del editReplyMarkup error:", e);
-          // fallback: 删旧消息，发新消息
+          // fallback: 用 editMessageCaption/editMessageText 重设按钮
           try {
-              await api(env.BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => {});
-              const u = await getUser(uid, env);
-              const meta = getUMeta({ id: uid, first_name: u.user_info?.name || "User", last_name: "", username: u.user_info?.username }, u, Date.now() / 1000);
-              await api(env.BOT_TOKEN, "sendMessage", {
-                  chat_id: msg.chat.id,
-                  text: meta.card, parse_mode: "HTML",
-                  reply_markup: getBtns(uid)
-              });
+              const btns = getBtns(uid);
+              if (msg.photo) {
+                  await api(env.BOT_TOKEN, "editMessageCaption", {
+                      chat_id: msg.chat.id, message_id: msg.message_id,
+                      caption: msg.caption || "", parse_mode: "HTML",
+                      reply_markup: btns
+                  });
+              } else {
+                  await api(env.BOT_TOKEN, "editMessageText", {
+                      chat_id: msg.chat.id, message_id: msg.message_id,
+                      text: msg.text || "(已取消)", parse_mode: "HTML",
+                      reply_markup: btns
+                  });
+              }
           } catch (e2) { console.error("cancel_del fallback error:", e2); }
       }
       return;
