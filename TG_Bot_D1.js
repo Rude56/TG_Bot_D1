@@ -202,7 +202,7 @@ async function getUser(id, env) {
   if (!u) {
     u = { user_id: id, user_state: "new", is_blocked: 0, block_count: 0, topic_id: null, user_info_json: "{}", topic_creating: 0, topic_create_ts: 0 };
   }
-  u.is_blocked = !!u.is_blocked;
+  u.is_blocked = u.is_blocked || 0;  // 0=正常, 1=管理拉黑, 2=群主拉黑
   u.user_info = safeParse(u.user_info_json, {});
   u.topic_creating = !!u.topic_creating;
   u.topic_create_ts = u.topic_create_ts || 0;
@@ -223,7 +223,7 @@ async function updUser(id, data, env) {
   }
   const keys = Object.keys(data);
   if (!keys.length) return;
-  const safeKeys = keys.filter(k => ["user_state", "is_blocked", "block_count", "topic_id", "user_info_json", "topic_creating", "topic_create_ts"].includes(k));
+  const safeKeys = keys.filter(k => ["user_state", "is_blocked", "block_count", "topic_id", "user_info_json", "topic_creating", "topic_create_ts", "is_whitelisted"].includes(k));
   if (!safeKeys.length) return;
   const q = `UPDATE users SET ${safeKeys.map(k => `${k}=?`).join(",")} WHERE user_id=?`;
   const v = [...safeKeys.map(k => (typeof data[k] === "boolean" ? (data[k] ? 1 : 0) : data[k])), id];
@@ -237,8 +237,9 @@ async function dbInit(env) {
     env.TG_BOT_DB.prepare(`CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`),
     env.TG_BOT_DB.prepare(`CREATE TABLE IF NOT EXISTS users (  
       user_id TEXT PRIMARY KEY, user_state TEXT DEFAULT 'new', is_blocked INTEGER DEFAULT 0, block_count INTEGER DEFAULT 0,  
-      topic_id TEXT, user_info_json TEXT DEFAULT '{}', topic_creating INTEGER DEFAULT 0, topic_create_ts INTEGER DEFAULT 0  
+      topic_id TEXT, user_info_json TEXT DEFAULT '{}', topic_creating INTEGER DEFAULT 0, topic_create_ts INTEGER DEFAULT 0, is_whitelisted INTEGER DEFAULT 0
     )`),
+    env.TG_BOT_DB.prepare(`ALTER TABLE users ADD COLUMN is_whitelisted INTEGER DEFAULT 0`).catch(() => {}),
     env.TG_BOT_DB.prepare(`CREATE TABLE IF NOT EXISTS messages (  
       user_id TEXT, message_id TEXT, text TEXT, date INTEGER, PRIMARY KEY (user_id, message_id)  
     )`),
@@ -523,15 +524,20 @@ async function handlePrivate(msg, env, ctx) {
     return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `✅ 已删除用户 ${target} 的话题。` });
   }
 
-  // 群主专属命令: /write 用户id (加白名单/解除拉黑)
+  // 群主专属命令: /write 用户id (加白名单)
   if (text.startsWith("/write ") && (await isPrimaryAdmin(id, env))) {
     const target = text.split(/\s+/)[1]?.trim();
     if (!target || !/^\d+$/.test(target)) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "用法: /write 用户id" });
     const u = await getUser(target, env);
-    if (!u.is_blocked) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `ℹ️ 用户 ${target} 未被拉黑。` });
-    await sql(env, "UPDATE users SET is_blocked=0 WHERE user_id=?", [target]);
-    api(env.BOT_TOKEN, "sendMessage", { chat_id: target, text: "✅ 您的拉黑已被解除，发送 /start 重新开始。" }).catch(() => {});
-    return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `✅ 已解除用户 ${target} 的拉黑。` });
+    if (u.is_whitelisted) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `ℹ️ 用户 ${target} 已在白名单中。` });
+    await sql(env, "UPDATE users SET is_whitelisted=1, is_blocked=0 WHERE user_id=?", [target]);
+    // 如果之前被拉黑，删除黑名单话题中的通知
+    if (u.is_blocked) {
+      const tgUser = { id: target, first_name: u.user_info?.name || "User", last_name: "", username: u.user_info?.username };
+      await manageBlacklist(env, u, tgUser, false);
+    }
+    api(env.BOT_TOKEN, "sendMessage", { chat_id: target, text: "✅ 您已被加入白名单，发送 /start 开始使用。" }).catch(() => {});
+    return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `✅ 已将用户 ${target} 加入白名单。` });
   }
 
   // 群主专属命令: /black 用户id (加黑名单)
@@ -540,12 +546,20 @@ async function handlePrivate(msg, env, ctx) {
     if (!target || !/^\d+$/.test(target)) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "用法: /black 用户id" });
     if (await isAuthAdmin(target, env)) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "❌ 无法拉黑管理员。" });
     const u = await getUser(target, env);
+    if (u.is_whitelisted) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "❌ 白名单用户，无法拉黑。" });
     if (u.is_blocked) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `ℹ️ 用户 ${target} 已在黑名单中。` });
-    await sql(env, "UPDATE users SET is_blocked=1 WHERE user_id=?", [target]);
+    // 删除话题
+    try {
+      if (u.topic_id) {
+        await api(env.BOT_TOKEN, "deleteForumTopic", { chat_id: env.ADMIN_GROUP_ID, message_thread_id: u.topic_id });
+      }
+    } catch (e) { console.error("black del topic error:", e); }
+    // is_blocked=2 表示群主拉黑，管理无法解除
+    await sql(env, "UPDATE users SET topic_id=NULL, is_blocked=2, topic_creating=0 WHERE user_id=?", [target]);
     // 发送黑名单通知
     const tgUser = { id: target, first_name: u.user_info?.name || "User", last_name: "", username: u.user_info?.username };
     await manageBlacklist(env, u, tgUser, true);
-    return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `✅ 已将用户 ${target} 加入黑名单。` });
+    return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `✅ 已将用户 ${target} 加入黑名单并删除话题。` });
   }
 
   if (isStart && (await isPrimaryAdmin(id, env))) {
@@ -572,6 +586,11 @@ async function handlePrivate(msg, env, ctx) {
 
   const verifyOn = await getBool("enable_verify", env);
   const qaOn = await getBool("enable_qa_verify", env);
+  // 白名单用户跳过验证
+  if (u.is_whitelisted && u.user_state !== "verified") {
+    await updUser(id, { user_state: "verified" }, env);
+    u.user_state = "verified";
+  }
   if (u.user_state !== "verified" && (verifyOn || qaOn)) {
     if (u.user_state === "pending_verification" && text) return verifyAnswer(id, text, env);
     return sendStart(id, msg, env);
@@ -1148,9 +1167,10 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const getUMeta = (tgUser, dbUser, d) => {
   const id = tgUser.id.toString();
   const tgName = (((tgUser.first_name || "") + " " + (tgUser.last_name || "")).trim());
-  const name = tgName || dbUser.user_info?.name || "User";
+  const dbName = (dbUser.user_info?.name || "").trim();
+  // 优先使用数据库中保存的名字（来自 WebApp 验证），再用 Telegram 名字
+  const name = dbName || tgName || "User";
   
-  // 新增：获取 Username
   const username = tgUser.username ? `@${tgUser.username}` : (dbUser.user_info?.username ? `@${dbUser.user_info.username}` : "无");
   
   return { 
@@ -1238,6 +1258,8 @@ async function handleCallback(cb, env) {
   // 3. 删除话题并拉黑
   if (act === "del_topic_blacklist") {
       if (!(await isPrimaryAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
+      const u = await getUser(p1, env);
+      if (u.is_whitelisted) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "白名单用户，无法拉黑", show_alert: true }).catch(() => {});
       await api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
       return api(env.BOT_TOKEN, "editMessageReplyMarkup", {
           chat_id: msg.chat.id,
@@ -1256,6 +1278,7 @@ async function handleCallback(cb, env) {
       if (!(await isPrimaryAdmin(from.id, env))) return;
       const uid = p1;
       const u = await getUser(uid, env);
+      if (u.is_whitelisted) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "白名单用户，无法拉黑", show_alert: true }).catch(() => {});
       // 先保存用户信息，避免清空后丢失
       const savedName = u.user_info?.name || "";
       const savedUsername = u.user_info?.username || "";
@@ -1312,6 +1335,8 @@ async function handleCallback(cb, env) {
   if (act === "unblock") {
       if (!(await isPrimaryAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
       const uid = p1;
+      const u = await getUser(uid, env);
+      if (u.is_blocked >= 2) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "群主拉黑，无法解除", show_alert: true }).catch(() => {});
       await sql(env, "UPDATE users SET is_blocked=0 WHERE user_id=?", [uid]);
       // 删除黑名单话题中的消息
       await api(env.BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => {});
@@ -1363,8 +1388,22 @@ async function handleAdminReply(msg, env) {
       if (u.user_info?.card_msg_id) {
         await api(env.BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: u.user_info.card_msg_id }).catch(() => {});
       }
+      // 尝试从 Telegram 获取最新用户信息
+      let tgUser;
+      try {
+        const chatInfo = await api(env.BOT_TOKEN, "getChat", { chat_id: uid });
+        tgUser = { id: uid, first_name: chatInfo.first_name || "", last_name: chatInfo.last_name || "", username: chatInfo.username || "" };
+        // 同步更新数据库
+        const nm = ((chatInfo.first_name || "") + " " + (chatInfo.last_name || "")).trim();
+        const patch = {};
+        if (nm) patch.name = nm;
+        if (chatInfo.username) patch.username = chatInfo.username;
+        if (Object.keys(patch).length) await updUser(uid, { user_info: patch }, env);
+      } catch {
+        tgUser = { id: uid, first_name: u.user_info?.name || "User", last_name: "", username: u.user_info?.username || "" };
+      }
       // 重新发送资料卡
-      await sendInfoCardToTopic(env, u, { id: uid, first_name: u.user_info?.name || "User", last_name: "", username: u.user_info?.username }, msg.message_thread_id, Date.now() / 1000);
+      await sendInfoCardToTopic(env, u, tgUser, msg.message_thread_id, Date.now() / 1000);
       // 删除命令消息
       await api(env.BOT_TOKEN, "deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => {});
     } catch (e) { console.error("refresh card error:", e); }
