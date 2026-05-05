@@ -510,10 +510,10 @@ async function handlePrivate(msg, env, ctx) {
     return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `✅ 已重置用户 ${target} 的验证状态。` });
   }
 
-  // 群主专属命令: /del+用户id
-  if (text.startsWith("/del+") && (await isPrimaryAdmin(id, env))) {
-    const target = text.split("+")[1]?.trim();
-    if (!target || !/^\d+$/.test(target)) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "用法: /del+用户id" });
+  // 群主专属命令: /del 用户id
+  if (text.startsWith("/del ") && (await isPrimaryAdmin(id, env))) {
+    const target = text.split(/\s+/)[1]?.trim();
+    if (!target || !/^\d+$/.test(target)) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "用法: /del 用户id" });
     const u = await getUser(target, env);
     if (!u.topic_id) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `❌ 用户 ${target} 没有关联话题。` });
     try {
@@ -523,10 +523,10 @@ async function handlePrivate(msg, env, ctx) {
     return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `✅ 已删除用户 ${target} 的话题。` });
   }
 
-  // 群主专属命令: /write+用户id (加白名单/解除拉黑)
-  if (text.startsWith("/write+") && (await isPrimaryAdmin(id, env))) {
-    const target = text.split("+")[1]?.trim();
-    if (!target || !/^\d+$/.test(target)) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "用法: /write+用户id" });
+  // 群主专属命令: /write 用户id (加白名单/解除拉黑)
+  if (text.startsWith("/write ") && (await isPrimaryAdmin(id, env))) {
+    const target = text.split(/\s+/)[1]?.trim();
+    if (!target || !/^\d+$/.test(target)) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "用法: /write 用户id" });
     const u = await getUser(target, env);
     if (!u.is_blocked) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `ℹ️ 用户 ${target} 未被拉黑。` });
     await sql(env, "UPDATE users SET is_blocked=0 WHERE user_id=?", [target]);
@@ -534,10 +534,10 @@ async function handlePrivate(msg, env, ctx) {
     return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `✅ 已解除用户 ${target} 的拉黑。` });
   }
 
-  // 群主专属命令: /black+用户id (加黑名单)
-  if (text.startsWith("/black+") && (await isPrimaryAdmin(id, env))) {
-    const target = text.split("+")[1]?.trim();
-    if (!target || !/^\d+$/.test(target)) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "用法: /black+用户id" });
+  // 群主专属命令: /black 用户id (加黑名单)
+  if (text.startsWith("/black ") && (await isPrimaryAdmin(id, env))) {
+    const target = text.split(/\s+/)[1]?.trim();
+    if (!target || !/^\d+$/.test(target)) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "用法: /black 用户id" });
     if (await isAuthAdmin(target, env)) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "❌ 无法拉黑管理员。" });
     const u = await getUser(target, env);
     if (u.is_blocked) return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: `ℹ️ 用户 ${target} 已在黑名单中。` });
@@ -554,7 +554,7 @@ async function handlePrivate(msg, env, ctx) {
   }
 
   if (text === "/help" && (await isAuthAdmin(id, env))) {
-    return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "ℹ️ <b>帮助</b>\n• 回复消息即对话\n• /start 打开面板\n• /del 双向撤回\n• /del+id 删除话题\n• /write+id 解除拉黑\n• /black+id 拉黑用户\n• /reset id 重置验证", parse_mode: "HTML" });
+    return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "ℹ️ <b>帮助</b>\n• 回复消息即对话\n• /start 打开面板\n• /del 双向撤回\n• /del 用户id 删除话题\n• /write 用户id 解除拉黑\n• /black 用户id 拉黑用户\n• /reset 用户id 重置验证", parse_mode: "HTML" });
   }
 
   const u = u0;
@@ -1149,7 +1149,6 @@ const getUMeta = (tgUser, dbUser, d) => {
   const id = tgUser.id.toString();
   const tgName = (((tgUser.first_name || "") + " " + (tgUser.last_name || "")).trim());
   const name = tgName || dbUser.user_info?.name || "User";
-  const timeStr = new Date(d * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
   
   // 新增：获取 Username
   const username = tgUser.username ? `@${tgUser.username}` : (dbUser.user_info?.username ? `@${dbUser.user_info.username}` : "无");
@@ -1158,12 +1157,11 @@ const getUMeta = (tgUser, dbUser, d) => {
       userId: id, 
       name, 
       topicName: name.substring(0, 128), 
-      card: `👤: <code>${escapeHTML(name)}</code>\n🔗: ${escapeHTML(username)}\n🆔: <code>${escapeHTML(id)}</code>\n🕒: <code>${escapeHTML(timeStr)}</code>` 
+      card: `👤: <code>${escapeHTML(name)}</code>\n🔗: ${escapeHTML(username)}\n🆔: <code>${escapeHTML(id)}</code>` 
   };
 };
 const getBtns = (id) => ({
   inline_keyboard: [
-    [{ text: "👤 主页", url: `tg://user?id=${id}` }],
     [
       { text: "🗑 删除话题", callback_data: `del_topic_confirm:${id}` },
       { text: "🚫 删除并拉黑", callback_data: `del_topic_blacklist:${id}` }
