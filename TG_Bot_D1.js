@@ -709,8 +709,8 @@ async function handleVerifiedMsg(msg, u, env, ctx) {
     const match = (Array.isArray(rules) ? rules : []).find(r => r && safeRegexTest(r.keywords, text));
     if (match) api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: match.response }).catch(() => { });
   }
-  // 只有文字消息给 👍 表态
-  let deliveryEmoji = (msg.text || msg.caption) ? DELIVERED_REACTION : null;
+  // 所有消息都给 👍 表态
+  let deliveryEmoji = DELIVERED_REACTION;
   // 就寝时间逻辑 (自动化)
   if (await getBool("enable_sleep_mode", env)) {
     const now = new Date();
@@ -1478,13 +1478,38 @@ async function handleAdminReply(msg, env) {
   } : undefined;
 
   try {
-      // 发送消息
-      const sent = await api(env.BOT_TOKEN, "copyMessage", {
-          chat_id: uid,
-          from_chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          reply_parameters: reply_parameters // 使用新的参数
-      });
+      let sent;
+      // 转发消息优先用 forwardMessage（保留原始转发头）
+      if (msg.forward_from || msg.forward_from_chat || msg.forward_origin) {
+          let fwdFailed = false;
+          try {
+              sent = await api(env.BOT_TOKEN, "forwardMessage", {
+                  chat_id: uid,
+                  from_chat_id: msg.chat.id,
+                  message_id: msg.message_id
+              });
+          } catch (fwdErr) {
+              const errMsg = fwdErr?.message || "";
+              console.warn("admin forwardMessage failed, fallback to copyMessage:", errMsg);
+              fwdFailed = true;
+          }
+          if (fwdFailed || !(sent && sent.message_id)) {
+              sent = await api(env.BOT_TOKEN, "copyMessage", {
+                  chat_id: uid,
+                  from_chat_id: msg.chat.id,
+                  message_id: msg.message_id,
+                  reply_parameters: reply_parameters
+              });
+          }
+      } else {
+          // 普通消息
+          sent = await api(env.BOT_TOKEN, "copyMessage", {
+              chat_id: uid,
+              from_chat_id: msg.chat.id,
+              message_id: msg.message_id,
+              reply_parameters: reply_parameters
+          });
+      }
 
       // 记录消息映射
       if (sent && sent.message_id) {
