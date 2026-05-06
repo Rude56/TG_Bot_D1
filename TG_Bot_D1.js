@@ -602,7 +602,7 @@ async function handlePrivate(msg, env, ctx) {
     const stateStr = await getCfg(`admin_state:${id}`, env);
     if (stateStr) {
       const state = safeParse(stateStr);
-      if (state.action === "input") return handleAdminInput(id, msg, state, env);
+      if (state.action === "input" || state.action === "welcome_setup") return handleAdminInput(id, msg, state, env);
     }
   }
 
@@ -612,6 +612,7 @@ async function handlePrivate(msg, env, ctx) {
   if (u.is_whitelisted && u.user_state !== "verified") {
     await updUser(id, { user_state: "verified" }, env);
     u.user_state = "verified";
+    await sendWelcome(env, id, msg.from.first_name || "User");
   }
   if (u.user_state !== "verified" && (verifyOn || qaOn)) {
     if (u.user_state === "pending_verification" && text) return verifyAnswer(id, text, env);
@@ -640,27 +641,6 @@ async function sendStart(id, msg, env) {
     return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: u.topic_id ? "✅ <b>会话已连接</b>" : "✅ 已验证。", parse_mode: "HTML" });
   }
 
-  let welcomeRaw = await getCfg("welcome_msg", env);
-  const name = escapeHTML(msg.from.first_name || "User");
-  let media = null, txt = welcomeRaw;
-  try {
-    if (welcomeRaw.trim().startsWith("{")) {
-      media = safeParse(welcomeRaw, null);
-      if (media) txt = media.caption || "";
-    }
-  } catch { }
-  txt = txt.replace(/{name}|{user}/g, name);
-
-  if (media && media.type) {
-    try {
-      await api(env.BOT_TOKEN, `send${media.type.charAt(0).toUpperCase() + media.type.slice(1)}`, { chat_id: id, [media.type]: media.file_id, caption: txt, parse_mode: "HTML" });
-    } catch {
-      await api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: txt, parse_mode: "HTML" });
-    }
-  } else {
-    await api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: txt, parse_mode: "HTML" });
-  }
-
   const url = (CACHE.workerUrl || env.WORKER_URL || "").replace(/\/$/, "");
   const vOn = await getBool("enable_verify", env);
   const qaOn = await getBool("enable_qa_verify", env);
@@ -678,6 +658,43 @@ async function sendStart(id, msg, env) {
   } else {
     await updUser(id, { user_state: "verified" }, env);
     await api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "✅ 已验证。" });
+    await sendWelcome(env, id, msg.from.first_name || "User");
+  }
+}
+
+// 发送欢迎语（优先转发存储的消息，否则用文字）
+async function sendWelcome(env, uid, name) {
+  const stored = await getJsonCfg("welcome_msg_ids", env);
+  if (Array.isArray(stored) && stored.length > 0) {
+    for (const item of stored) {
+      if (item.from_chat_id && item.message_id) {
+        await api(env.BOT_TOKEN, "copyMessage", {
+          chat_id: uid,
+          from_chat_id: item.from_chat_id.toString(),
+          message_id: Number(item.message_id)
+        }).catch(() => {});
+      }
+    }
+    return;
+  }
+  // 无存储消息时，用旧版文字/媒体欢迎语
+  let welcomeRaw = await getCfg("welcome_msg", env);
+  let media = null, txt = welcomeRaw;
+  try {
+    if (welcomeRaw.trim().startsWith("{")) {
+      media = safeParse(welcomeRaw, null);
+      if (media) txt = media.caption || "";
+    }
+  } catch {}
+  txt = (txt || "").replace(/{name}|{user}/g, name);
+  if (txt && media && media.type) {
+    await api(env.BOT_TOKEN, `send${media.type.charAt(0).toUpperCase() + media.type.slice(1)}`, {
+      chat_id: uid, [media.type]: media.file_id, caption: txt, parse_mode: "HTML"
+    }).catch(async () => {
+      await api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: txt, parse_mode: "HTML" });
+    });
+  } else if (txt) {
+    await api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: txt, parse_mode: "HTML" });
   }
 }
 
@@ -1127,6 +1144,8 @@ async function handleTokenSubmit(req, env, ctx) {
       await api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: "✅ 验证通过!\n请继续回答:\n" + (await getCfg("verif_q", env)) });
     } else {
       await api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: "✅ 验证通过!\n请直接发送消息以联系管理员。" });
+      const wName = parsed?.userObj?.first_name || "User";
+      await sendWelcome(env, uid, wName);
     }
     return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } });
   } catch {
@@ -1138,6 +1157,7 @@ async function verifyAnswer(id, ans, env) {
   if (ans.trim() === (await getCfg("verif_a", env)).trim()) {
     await updUser(id, { user_state: "verified" }, env);
     await api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "✅ 验证通过!\n请直接发送消息以联系管理员。" });
+    await sendWelcome(env, id, "User");
   } else {
     await api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "❌ 错误" });
   }
@@ -1419,7 +1439,7 @@ async function handleAdminReply(msg, env) {
     const stateStr = await getCfg(`admin_state:${msg.from.id}`, env);
     if (stateStr) {
       const state = safeParse(stateStr);
-      if (state.action === "input") return handleAdminInput(msg.from.id, msg, state, env);
+      if (state.action === "input" || state.action === "welcome_setup") return handleAdminInput(msg.from.id, msg, state, env);
     }
   }
 
@@ -1607,7 +1627,14 @@ try {
     } else if (key === "ar" && type === "add") {
         promptText = `请输入新的 <b>${label}</b>\n格式: <code>关键词===回复内容</code>\n例如: <code>价格===请联系人工</code>\n退出点 /cancel`;
     } else if (key === "welcome_msg") {
-        promptText = `请输入新的 <b>${label}</b>\n• 支持文字、图片、视频、GIF\n• 占位符: {name}\n• 直接发送媒体或文字即可\n退出点 /cancel`;
+        await setCfg(`admin_state:${cid}`, JSON.stringify({ action: "welcome_setup", key: key }), env);
+        await setCfg(`welcome_setup_msgs:${cid}`, "[]", env);
+        return api(env.BOT_TOKEN, "editMessageText", { 
+            chat_id: cid, 
+            message_id: mid, 
+            text: `📨 <b>设置欢迎消息</b>\n请直接发送任意消息（文字/图片/视频/贴纸等）\n可发送多条，完成后点 /done\n点 /cancel 取消`,
+            parse_mode: "HTML" 
+        });
     }
 
     return api(env.BOT_TOKEN, "editMessageText", { 
@@ -1649,6 +1676,38 @@ return { inline_keyboard: btns };
 
 async function handleAdminInput(id, msg, state, env) {
 const txt = msg.text || "";
+
+// 欢迎语设置模式：采集多条消息
+if (state.action === "welcome_setup") {
+  if (txt === "/done") {
+    const msgs = await getJsonCfg(`welcome_setup_msgs:${id}`, env);
+    await setCfg("welcome_msg_ids", JSON.stringify(Array.isArray(msgs) ? msgs : []), env);
+    await sql(env, "DELETE FROM config WHERE key=?", [`admin_state:${id}`]);
+    await sql(env, "DELETE FROM config WHERE key=?", [`welcome_setup_msgs:${id}`]);
+    return handleAdminConfig(id, null, "menu", null, null, env);
+  }
+  if (txt === "/cancel") {
+    await sql(env, "DELETE FROM config WHERE key=?", [`admin_state:${id}`]);
+    await sql(env, "DELETE FROM config WHERE key=?", [`welcome_setup_msgs:${id}`]);
+    return handleAdminConfig(id, null, "menu", null, null, env);
+  }
+  // 保存消息引用（from_chat_id 是私聊则是用户id，群聊则是群id）
+  const fromChatId = msg.chat.id.toString();
+  const messageId = msg.message_id;
+  const msgs = await getJsonCfg(`welcome_setup_msgs:${id}`, env);
+  const arr = Array.isArray(msgs) ? msgs : [];
+  arr.push({ from_chat_id: fromChatId, message_id: messageId });
+  await setCfg(`welcome_setup_msgs:${id}`, JSON.stringify(arr), env);
+  // 给一个确认反应
+  api(env.BOT_TOKEN, "setMessageReaction", {
+    chat_id: msg.chat.id,
+    message_id: messageId,
+    reaction: [{ type: "emoji", emoji: "✅" }],
+    is_big: false
+  }).catch(() => {});
+  return;
+}
+
 if (txt === "/cancel") {
   await sql(env, "DELETE FROM config WHERE key=?", [`admin_state:${id}`]);
   return handleAdminConfig(id, null, "menu", null, null, env);
@@ -1749,7 +1808,9 @@ async function markDelivered(env, chatId, messageId, emoji = DELIVERED_REACTION)
       reaction: [{ type: "emoji", emoji: emoji }],
       is_big: false
     });
-  } catch { }
+  } catch (e) {
+    if (e?.message) console.warn("markDelivered failed:", e.message);
+  }
 }async function handleDeleteSync(msg, env) {
   const replyTo = msg.reply_to_message;
   const chatId = msg.chat.id.toString();
