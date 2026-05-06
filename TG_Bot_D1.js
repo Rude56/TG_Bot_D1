@@ -58,8 +58,7 @@ const DEFAULTS = {
   sleep_start: "23:00",
   sleep_end: "07:00",
   sleep_msg: "💤 我睡着了，醒来第一时间看你消息哦",
-  block_keywords: "[]",
-  keyword_responses: "[]"
+  block_keywords: "[]"
 };
 
 const DELIVERED_REACTION = "👍";
@@ -602,7 +601,7 @@ async function handlePrivate(msg, env, ctx) {
     const stateStr = await getCfg(`admin_state:${id}`, env);
     if (stateStr) {
       const state = safeParse(stateStr);
-      if (state.action === "input" || state.action === "welcome_setup" || state.action === "ar_msg_setup") return handleAdminInput(id, msg, state, env);
+      if (state.action === "input" || state.action === "welcome_setup" || state.action === "ar_msg_setup" || state.action === "sleep_setup") return handleAdminInput(id, msg, state, env);
     }
   }
 
@@ -663,22 +662,9 @@ async function sendStart(id, msg, env) {
   }
 }
 
-// 发送欢迎语（先转发自定义消息，再发默认推广，最后发验证通过）
+// 发送欢迎语（默认推广 → 自定义消息 → 由调用方追加验证通过）
 async function sendWelcome(env, uid, name) {
-  const stored = await getJsonCfg("welcome_msg_ids", env);
-  // 1. 先转发自定义消息
-  if (Array.isArray(stored) && stored.length > 0) {
-    for (const item of stored) {
-      if (item.from_chat_id && item.message_id) {
-        await api(env.BOT_TOKEN, "copyMessage", {
-          chat_id: uid,
-          from_chat_id: item.from_chat_id.toString(),
-          message_id: Number(item.message_id)
-        }).catch(() => {});
-      }
-    }
-  }
-  // 2. 再发默认推广文本
+  // 1. 先发默认推广文本
   let welcomeRaw = await getCfg("welcome_msg", env);
   let media = null, txt = welcomeRaw;
   try {
@@ -696,6 +682,19 @@ async function sendWelcome(env, uid, name) {
     });
   } else if (txt) {
     await api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: txt, parse_mode: "HTML" });
+  }
+  // 2. 再转发自定义消息
+  const stored = await getJsonCfg("welcome_msg_ids", env);
+  if (Array.isArray(stored) && stored.length > 0) {
+    for (const item of stored) {
+      if (item.from_chat_id && item.message_id) {
+        await api(env.BOT_TOKEN, "copyMessage", {
+          chat_id: uid,
+          from_chat_id: item.from_chat_id.toString(),
+          message_id: Number(item.message_id)
+        }).catch(() => {});
+      }
+    }
   }
 }
 
@@ -723,11 +722,7 @@ async function handleVerifiedMsg(msg, u, env, ctx) {
   }
 
   if (text) {
-    // 旧版文字自动回复（兼容）
-    const rules = await getJsonCfg("keyword_responses", env);
-    const match = (Array.isArray(rules) ? rules : []).find(r => r && safeRegexTest(r.keywords, text));
-    if (match) api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: match.response }).catch(() => { });
-    // 新版转发自动回复
+    // 转发自动回复
     const arRules = await getJsonCfg("auto_reply_msgs", env);
     const arMatch = (Array.isArray(arRules) ? arRules : []).find(r => r && r.keywords && safeRegexTest(r.keywords, text));
     if (arMatch && Array.isArray(arMatch.messages)) {
@@ -745,7 +740,7 @@ async function handleVerifiedMsg(msg, u, env, ctx) {
         api(env.BOT_TOKEN, "sendMessage", {
           chat_id: env.ADMIN_GROUP_ID,
           message_thread_id: u.topic_id,
-          text: `🤖 <b>自动回复已触发</b>\n关键词: <code>${escapeHTML(arMatch.keywords)}</code>\n用户消息: <code>${escapeHTML(text.substring(0, 100))}</code>`,
+          text: `🤖 用户触发关键词<code>${escapeHTML(arMatch.keywords)}</code>`,
           parse_mode: "HTML"
         }).catch(() => {});
       }
@@ -768,7 +763,22 @@ async function handleVerifiedMsg(msg, u, env, ctx) {
       deliveryEmoji = "😴"; // 就寝时切换表情
       const nowTs = Date.now();
       if (nowTs - (u.user_info.last_sleep_reply || 0) > 300000) {
-        api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: (await getCfg("sleep_msg", env)) }).catch(() => { });
+        // 先转发存储的睡觉消息
+        const sleepMsgs = await getJsonCfg("sleep_msg_ids", env);
+        if (Array.isArray(sleepMsgs) && sleepMsgs.length > 0) {
+          for (const item of sleepMsgs) {
+            if (item.from_chat_id && item.message_id) {
+              await api(env.BOT_TOKEN, "copyMessage", {
+                chat_id: id,
+                from_chat_id: item.from_chat_id.toString(),
+                message_id: Number(item.message_id)
+              }).catch(() => {});
+            }
+          }
+        } else {
+          // 无存储消息时用文字
+          api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: (await getCfg("sleep_msg", env)) }).catch(() => { });
+        }
         await updUser(id, { user_info: { last_sleep_reply: nowTs } }, env);
       }
     }
@@ -1168,9 +1178,9 @@ async function handleTokenSubmit(req, env, ctx) {
       await updUser(uid, { user_state: "pending_verification" }, env);
       await api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: "✅ 验证通过!\n请继续回答:\n" + (await getCfg("verif_q", env)) });
     } else {
-      await api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: "✅ 验证通过!\n请直接发送消息以联系管理员。" });
       const wName = parsed?.userObj?.first_name || "User";
       await sendWelcome(env, uid, wName);
+      await api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: "✅ 验证通过!\n请直接发送消息以联系管理员。" });
     }
     return new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json" } });
   } catch {
@@ -1181,8 +1191,8 @@ async function handleTokenSubmit(req, env, ctx) {
 async function verifyAnswer(id, ans, env) {
   if (ans.trim() === (await getCfg("verif_a", env)).trim()) {
     await updUser(id, { user_state: "verified" }, env);
-    await api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "✅ 验证通过!\n请直接发送消息以联系管理员。" });
     await sendWelcome(env, id, "User");
+    await api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "✅ 验证通过!\n请直接发送消息以联系管理员。" });
   } else {
     await api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "❌ 错误" });
   }
@@ -1492,7 +1502,7 @@ async function handleAdminReply(msg, env) {
     const stateStr = await getCfg(`admin_state:${msg.from.id}`, env);
     if (stateStr) {
       const state = safeParse(stateStr);
-      if (state.action === "input" || state.action === "welcome_setup" || state.action === "ar_msg_setup") return handleAdminInput(msg.from.id, msg, state, env);
+      if (state.action === "input" || state.action === "welcome_setup" || state.action === "ar_msg_setup" || state.action === "sleep_setup") return handleAdminInput(msg.from.id, msg, state, env);
     }
   }
 
@@ -1605,7 +1615,6 @@ const LABEL_MAP = {
   "sleep_msg": "💤 提示语",
   "ar": "🤖 自动回复",
   "kw": "🚫 屏蔽词",
-  "keyword_responses": "🤖 自动回复",
   "block_keywords": "🚫 屏蔽词"
 };
 
@@ -1638,19 +1647,17 @@ try {
     if (["ar", "kw"].includes(key)) {
       const label = LABEL_MAP[key] || key;
       if (key === "ar") {
-        // 自动回复：显示旧关键词回复 + 新转发回复
+        // 自动回复：只显示转发回复规则
         const arMsgs = await getJsonCfg("auto_reply_msgs", env);
-        const kb = await getListKB(key, env);
-        const btns = [...kb.inline_keyboard];
-        // 插入转发回复规则
+        const btns = [];
         if (Array.isArray(arMsgs)) {
           for (const r of arMsgs) {
             const cnt = (r.messages || []).length;
-            btns.unshift([{ text: `📨 ${r.keywords} (${cnt}条)`, callback_data: `dummy` }, { text: "🗑", callback_data: `ar_del_msg:${r.id}` }]);
+            btns.push([{ text: `📨 ${r.keywords} (${cnt}条)`, callback_data: `dummy` }, { text: "🗑", callback_data: `ar_del_msg:${r.id}` }]);
           }
         }
-        // 添加转发回复按钮
-        btns.unshift([{ text: "📨 添加转发回复", callback_data: "ar_add_msg" }]);
+        btns.push([{ text: "📨 添加转发回复", callback_data: "ar_add_msg" }]);
+        btns.push([back]);
         return render(`<b>${label}</b>\n⚠️ 转发回复的消息<b>不要删除</b>`, { inline_keyboard: btns });
       }
       return render(`<b>${label}</b>`, await getListKB(key, env));
@@ -1679,12 +1686,13 @@ try {
     return handleAdminConfig(cid, mid, "menu", null, null, env);
   }
   if (type === "del") {
-    const realK = key === "kw" ? "block_keywords" : "keyword_responses";
-    let l = await getJsonCfg(realK, env);
-    l = (Array.isArray(l) ? l : []).filter(i => (i.id || i).toString() !== val);
-    await setCfg(realK, JSON.stringify(l), env);
-    const label = LABEL_MAP[key] || key;
-    return render(`<b>${label}</b> 已更新`, await getListKB(key, env));
+    if (key === "kw") {
+      let l = await getJsonCfg("block_keywords", env);
+      l = (Array.isArray(l) ? l : []).filter(i => (i.id || i).toString() !== val);
+      await setCfg("block_keywords", JSON.stringify(l), env);
+      const label = LABEL_MAP[key] || key;
+      return render(`<b>${label}</b> 已更新`, await getListKB(key, env));
+    }
   }
   if (type === "edit" || type === "add") {
     await setCfg(`admin_state:${cid}`, JSON.stringify({ action: "input", key: key + (type === "add" ? "_add" : "") }), env);
@@ -1693,8 +1701,6 @@ try {
 
     if (key === "sleep_start" || key === "sleep_end") {
         promptText = `请输入新的 <b>${label}</b>\n请输入 24 小时制时间 (如 23:30 )\n退出点 /cancel`;
-    } else if (key === "ar" && type === "add") {
-        promptText = `请输入新的 <b>${label}</b>\n格式: <code>关键词===回复内容</code>\n例如: <code>价格===请联系人工</code>\n退出点 /cancel`;
     } else if (key === "welcome_msg") {
         await setCfg(`admin_state:${cid}`, JSON.stringify({ action: "welcome_setup", key: key }), env);
         await setCfg(`welcome_setup_msgs:${cid}`, "[]", env);
@@ -1702,6 +1708,15 @@ try {
             chat_id: cid, 
             message_id: mid, 
             text: `📨 <b>设置欢迎消息</b>\n请直接发送任意消息（文字/图片/视频/贴纸等）\n可发送多条，完成后点 /done\n点 /cancel 取消`,
+            parse_mode: "HTML" 
+        });
+    } else if (key === "sleep_msg") {
+        await setCfg(`admin_state:${cid}`, JSON.stringify({ action: "sleep_setup", key: key }), env);
+        await setCfg(`sleep_setup_msgs:${cid}`, "[]", env);
+        return api(env.BOT_TOKEN, "editMessageText", { 
+            chat_id: cid, 
+            message_id: mid, 
+            text: `📨 <b>设置就寝提示</b>\n请直接发送任意消息（文字/图片/视频/贴纸等）\n可发送多条，完成后点 /done\n点 /cancel 取消`,
             parse_mode: "HTML" 
         });
     }
@@ -1736,10 +1751,10 @@ return { inline_keyboard: [[b("转发", keys[0], vals[0])], [b("媒体", keys[1]
 }
 
 async function getListKB(type, env) {
-const k = type === "ar" ? "keyword_responses" : "block_keywords";
+const k = "block_keywords";
 const l = await getJsonCfg(k, env);
-const btns = (Array.isArray(l) ? l : []).map(i => [{ text: `🗑 ${type === "ar" ? i.keywords : i}`, callback_data: `config:del:${type}:${i.id || i}` }]);
-btns.push([{ text: "➕ 添加", callback_data: `config:add:${type}` }], [{ text: "🔙 返回", callback_data: "config:menu" }]);
+const btns = (Array.isArray(l) ? l : []).map(i => [{ text: `🗑 ${i}`, callback_data: `config:del:kw:${i.id || i}` }]);
+btns.push([{ text: "➕ 添加", callback_data: `config:add:kw` }], [{ text: "🔙 返回", callback_data: "config:menu" }]);
 return { inline_keyboard: btns };
 }
 
@@ -1811,6 +1826,7 @@ if (state.action === "welcome_setup") {
     await setCfg("welcome_msg_ids", JSON.stringify(Array.isArray(msgs) ? msgs : []), env);
     await sql(env, "DELETE FROM config WHERE key=?", [`admin_state:${id}`]);
     await sql(env, "DELETE FROM config WHERE key=?", [`welcome_setup_msgs:${id}`]);
+    await api(env.BOT_TOKEN, "sendMessage", { chat_id: msg.chat.id, text: `✅ 欢迎语已保存\n\n⚠️ <b>请勿删除上方消息</b>，否则欢迎语将失效。`, parse_mode: "HTML" });
     return handleAdminConfig(id, null, "menu", null, null, env);
   }
   if (txt === "/cancel") {
@@ -1831,6 +1847,34 @@ if (state.action === "welcome_setup") {
     message_id: messageId,
     reaction: [{ type: "emoji", emoji: "✅" }],
     is_big: false
+  }).catch(() => {});
+  return;
+}
+
+// 就寝提示设置模式
+if (state.action === "sleep_setup") {
+  if (txt === "/done") {
+    const msgs = await getJsonCfg(`sleep_setup_msgs:${id}`, env);
+    await setCfg("sleep_msg_ids", JSON.stringify(Array.isArray(msgs) ? msgs : []), env);
+    await sql(env, "DELETE FROM config WHERE key=?", [`admin_state:${id}`]);
+    await sql(env, "DELETE FROM config WHERE key=?", [`sleep_setup_msgs:${id}`]);
+    await api(env.BOT_TOKEN, "sendMessage", { chat_id: msg.chat.id, text: `✅ 就寝提示已保存\n\n⚠️ <b>请勿删除上方消息</b>，否则就寝提示将失效。`, parse_mode: "HTML" });
+    return handleAdminConfig(id, null, "menu", "sleep", null, env);
+  }
+  if (txt === "/cancel") {
+    await sql(env, "DELETE FROM config WHERE key=?", [`admin_state:${id}`]);
+    await sql(env, "DELETE FROM config WHERE key=?", [`sleep_setup_msgs:${id}`]);
+    return handleAdminConfig(id, null, "menu", "sleep", null, env);
+  }
+  const fromChatId = msg.chat.id.toString();
+  const messageId = msg.message_id;
+  const msgs = await getJsonCfg(`sleep_setup_msgs:${id}`, env);
+  const arr = Array.isArray(msgs) ? msgs : [];
+  arr.push({ from_chat_id: fromChatId, message_id: messageId });
+  await setCfg(`sleep_setup_msgs:${id}`, JSON.stringify(arr), env);
+  api(env.BOT_TOKEN, "setMessageReaction", {
+    chat_id: msg.chat.id, message_id: messageId,
+    reaction: [{ type: "emoji", emoji: "✅" }], is_big: false
   }).catch(() => {});
   return;
 }
@@ -1864,18 +1908,11 @@ try {
     } else { val = txt; }
   } else if (k.endsWith("_add")) {
     k = k.replace("_add", "");
-    const realK = k === "ar" ? "keyword_responses" : "block_keywords";
-    const list = await getJsonCfg(realK, env);
+    const list = await getJsonCfg("block_keywords", env);
     const arr = Array.isArray(list) ? list : [];
-    if (k === "ar") {
-      const [kk, rr] = txt.split("===");
-      if (kk && rr) arr.push({ keywords: kk, response: rr, id: Date.now() });
-      else return api(env.BOT_TOKEN, "sendMessage", { chat_id: id, text: "❌ 格式错误,请使用:关键词===回复内容" });
-    } else {
-      arr.push(txt.trim());
-    }
+    arr.push(txt.trim());
     val = JSON.stringify(arr);
-    k = realK;
+    k = "block_keywords";
   }
 
   await setCfg(k, val, env);
