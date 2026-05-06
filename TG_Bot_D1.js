@@ -813,17 +813,40 @@ async function relayToTopic(msg, u, env, ctx, emoji) {
 
   try {
       let res;
-      // 转发消息使用 forwardMessage（保留来源信息）
+      // 转发消息优先用 forwardMessage（保留来源信息）
       if (msg.forward_from || msg.forward_from_chat || msg.forward_origin) {
-          // forwardMessage 不支持 reply_parameters
-          res = await api(env.BOT_TOKEN, "forwardMessage", {
-              chat_id: env.ADMIN_GROUP_ID,
-              from_chat_id: uid,
-              message_id: msg.message_id,
-              message_thread_id: tid
-          });
+          let fwdFailed = false;
+          try {
+              // forwardMessage 不支持 reply_parameters
+              res = await api(env.BOT_TOKEN, "forwardMessage", {
+                  chat_id: env.ADMIN_GROUP_ID,
+                  from_chat_id: uid,
+                  message_id: msg.message_id,
+                  message_thread_id: tid
+              });
+          } catch (fwdErr) {
+              const errMsg = fwdErr?.message || "";
+              // thread 错误交给外层重建话题
+              if (errMsg.includes("thread") || errMsg.includes("not found")) throw fwdErr;
+              console.warn("forwardMessage failed, fallback to copyMessage:", errMsg);
+              fwdFailed = true;
+          }
+          // forwardMessage 失败时降级为 copyMessage
+          if (fwdFailed || !(res && res.message_id)) {
+              const extra = {};
+              if (msg.text) extra.text = msg.text;
+              if (msg.caption) extra.caption = msg.caption;
+              res = await api(env.BOT_TOKEN, "copyMessage", {
+                  chat_id: env.ADMIN_GROUP_ID,
+                  from_chat_id: uid,
+                  message_id: msg.message_id,
+                  message_thread_id: tid,
+                  reply_parameters: reply_parameters,
+                  ...extra
+              });
+          }
       } else {
-          // 普通消息使用 copyMessage（无引用转发）
+          // 普通消息使用 copyMessage（支持引用回复）
           const extra = {};
           if (msg.text) extra.text = msg.text;
           if (msg.caption) extra.caption = msg.caption;
@@ -844,13 +867,15 @@ async function relayToTopic(msg, u, env, ctx, emoji) {
               [uid, msg.message_id.toString(), sentMsgId.toString(), Date.now()]);
       }
   } catch (cpErr) {
-      // 如果报错信息包含 thread 或 not found,说明群组里的话题被删了
+      // 如果报错信息包含 thread 或 not found,说明群组里的话题被删了，重建话题重试
       if (cpErr.message && (cpErr.message.includes("thread") || cpErr.message.includes("not found"))) {
           await updUser(uid, { topic_id: null }, env);
           u.topic_id = null;
           return relayToTopic(msg, u, env, ctx);
       }
-      return api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: "⚠️ 转发失败: " + cpErr.message });
+      // 其他错误静默记录，不打扰用户
+      console.error("relayToTopic failed:", cpErr?.message || cpErr);
+      return;
   }
 
   if (relaySuccess) {
