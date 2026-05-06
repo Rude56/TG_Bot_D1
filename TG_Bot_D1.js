@@ -851,7 +851,7 @@ async function relayToTopic(msg, u, env, ctx, emoji) {
 // --- 12. 资料卡 ---  
 async function sendInfoCardToTopic(env, u, tgUser, tid, date) {
   const meta = getUMeta(tgUser, u, date || Date.now() / 1000);
-  const mk = getBtns(u.user_id);  
+  const mk = getBtns(u.user_id, u);  
 
   try {
     // 1. 获取用户头像列表
@@ -1180,14 +1180,28 @@ const getUMeta = (tgUser, dbUser, d) => {
       card: `👤: <code>${escapeHTML(name)}</code>\n🔗: ${escapeHTML(username)}\n🆔: <code>${escapeHTML(id)}</code>` 
   };
 };
-const getBtns = (id) => ({
-  inline_keyboard: [
-    [
-      { text: "🗑 删除话题", callback_data: `del_topic_confirm:${id}` },
-      { text: "🚫 删除并拉黑", callback_data: `del_topic_blacklist:${id}` }
+const getBtns = (id, user) => {
+  const isBlocked = user?.is_blocked || 0;
+  const isWhitelisted = user?.is_whitelisted || 0;
+
+  const blockBtn = isBlocked
+    ? { text: "✅ 解除拉黑", callback_data: `unblock_user:${id}` }
+    : { text: "🚫 拉黑用户", callback_data: `block_user:${id}` };
+
+  const whitelistBtn = isWhitelisted
+    ? { text: "↩️ 取消白名单", callback_data: `remove_whitelist:${id}` }
+    : { text: "⭐ 加入白名单", callback_data: `add_whitelist:${id}` };
+
+  return {
+    inline_keyboard: [
+      [
+        { text: "🗑 删除话题", callback_data: `del_topic_confirm:${id}` },
+        { text: "🚫 删除并拉黑", callback_data: `del_topic_blacklist:${id}` }
+      ],
+      [blockBtn, whitelistBtn]
     ]
-  ]
-});
+  };
+};
 
 // --- 17. Commands ---  
 async function registerCommands(env) {
@@ -1222,7 +1236,7 @@ async function handleCallback(cb, env) {
 
   // 1. 删除话题 - 二次确认
   if (act === "del_topic_confirm") {
-      if (!(await isPrimaryAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
+      if (!(await isAuthAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
       await api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
       return api(env.BOT_TOKEN, "editMessageReplyMarkup", {
           chat_id: msg.chat.id,
@@ -1238,7 +1252,7 @@ async function handleCallback(cb, env) {
 
   // 2. 删除话题 - 执行删除（用户可重新验证）
   if (act === "del_topic_exec") {
-      if (!(await isPrimaryAdmin(from.id, env))) return;
+      if (!(await isAuthAdmin(from.id, env))) return;
       const uid = p1;
       const u = await getUser(uid, env);
       try {
@@ -1257,7 +1271,7 @@ async function handleCallback(cb, env) {
 
   // 3. 删除话题并拉黑
   if (act === "del_topic_blacklist") {
-      if (!(await isPrimaryAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
+      if (!(await isAuthAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
       const u = await getUser(p1, env);
       if (u.is_whitelisted) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "白名单用户，无法拉黑", show_alert: true }).catch(() => {});
       await api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
@@ -1275,7 +1289,7 @@ async function handleCallback(cb, env) {
 
   // 4. 执行删除并拉黑
   if (act === "del_blacklist_exec") {
-      if (!(await isPrimaryAdmin(from.id, env))) return;
+      if (!(await isAuthAdmin(from.id, env))) return;
       const uid = p1;
       const u = await getUser(uid, env);
       if (u.is_whitelisted) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "白名单用户，无法拉黑", show_alert: true }).catch(() => {});
@@ -1301,18 +1315,19 @@ async function handleCallback(cb, env) {
   // 3. 处理取消删除 - 恢复原状
   if (act === "cancel_del") {
       const uid = p1;
+      const cancelUser = await getUser(uid, env);
       await api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "已取消" }).catch(() => {});
       try {
           await api(env.BOT_TOKEN, "editMessageReplyMarkup", {
               chat_id: msg.chat.id,
               message_id: msg.message_id,
-              reply_markup: getBtns(uid)
+              reply_markup: getBtns(uid, cancelUser)
           });
       } catch (e) {
           console.error("cancel_del editReplyMarkup error:", e);
           // fallback: 用 editMessageCaption/editMessageText 重设按钮
           try {
-              const btns = getBtns(uid);
+              const btns = getBtns(uid, cancelUser);
               if (msg.photo) {
                   await api(env.BOT_TOKEN, "editMessageCaption", {
                       chat_id: msg.chat.id, message_id: msg.message_id,
@@ -1343,6 +1358,62 @@ async function handleCallback(cb, env) {
       api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "✅ 已解除拉黑" }).catch(() => {});
       // 通知用户
       api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: "✅ 您的拉黑已被解除，发送 /start 重新开始。" }).catch(() => {});
+      return;
+  }
+
+  // 6. 资料卡按钮 - 拉黑用户（管理可用，如已拉黑则解除）
+  if (act === "block_user") {
+      if (!(await isAuthAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
+      const uid = p1;
+      const u = await getUser(uid, env);
+      if (await isAuthAdmin(uid, env)) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无法拉黑管理员", show_alert: true }).catch(() => {});
+
+      if (u.is_blocked) {
+          // 已拉黑 → 解除拉黑
+          if (u.is_blocked >= 2) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "群主拉黑，无法解除", show_alert: true }).catch(() => {});
+          await sql(env, "UPDATE users SET is_blocked=0 WHERE user_id=?", [uid]);
+          await manageBlacklist(env, u, { id: uid, first_name: u.user_info?.name || "User", last_name: "", username: u.user_info?.username || undefined }, false);
+          api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "✅ 已解除拉黑" }).catch(() => {});
+          api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: "✅ 您的拉黑已被解除，发送 /start 重新开始。" }).catch(() => {});
+      } else {
+          // 未拉黑 → 拉黑
+          if (u.is_whitelisted) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "白名单用户，无法拉黑", show_alert: true }).catch(() => {});
+          const savedName = u.user_info?.name || "";
+          const savedUsername = u.user_info?.username || "";
+          try { if (u.topic_id) await api(env.BOT_TOKEN, "deleteForumTopic", { chat_id: env.ADMIN_GROUP_ID, message_thread_id: u.topic_id }); } catch {}
+          await sql(env, "UPDATE users SET topic_id=NULL, user_state='new', user_info_json='{}', is_blocked=1, topic_creating=0 WHERE user_id=?", [uid]);
+          await manageBlacklist(env, u, { id: uid, first_name: savedName || "User", last_name: "", username: savedUsername || undefined }, true);
+          api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "🚫 已拉黑并删除话题" }).catch(() => {});
+          api(env.BOT_TOKEN, "editMessageText", { chat_id: msg.chat.id, message_id: msg.message_id, text: msg.text || msg.caption || "", parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }).catch(() => {});
+          return;
+      }
+      // 刷新资料卡按钮
+      const refreshed = await getUser(uid, env);
+      try { await api(env.BOT_TOKEN, "editMessageReplyMarkup", { chat_id: msg.chat.id, message_id: msg.message_id, reply_markup: getBtns(uid, refreshed) }); } catch {}
+      return;
+  }
+
+  // 7. 资料卡按钮 - 白名单（管理可用，如已在白名单则取消）
+  if (act === "add_whitelist" || act === "remove_whitelist") {
+      if (!(await isAuthAdmin(from.id, env))) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "无权操作", show_alert: true }).catch(() => {});
+      const uid = p1;
+      const u = await getUser(uid, env);
+
+      if (act === "add_whitelist") {
+          if (u.is_whitelisted) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "已在白名单中" }).catch(() => {});
+          await sql(env, "UPDATE users SET is_whitelisted=1, is_blocked=0 WHERE user_id=?", [uid]);
+          // 如之前被拉黑，删除黑名单通知
+          if (u.is_blocked) await manageBlacklist(env, u, { id: uid, first_name: u.user_info?.name || "User", last_name: "", username: u.user_info?.username || undefined }, false);
+          api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "⭐ 已加入白名单" }).catch(() => {});
+          api(env.BOT_TOKEN, "sendMessage", { chat_id: uid, text: "✅ 您已被加入白名单，发送 /start 开始使用。" }).catch(() => {});
+      } else {
+          if (!u.is_whitelisted) return api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "未在白名单中" }).catch(() => {});
+          await sql(env, "UPDATE users SET is_whitelisted=0 WHERE user_id=?", [uid]);
+          api(env.BOT_TOKEN, "answerCallbackQuery", { callback_query_id: cb.id, text: "↩️ 已取消白名单" }).catch(() => {});
+      }
+      // 刷新资料卡按钮
+      const refreshed = await getUser(uid, env);
+      try { await api(env.BOT_TOKEN, "editMessageReplyMarkup", { chat_id: msg.chat.id, message_id: msg.message_id, reply_markup: getBtns(uid, refreshed) }); } catch {}
       return;
   }
 
